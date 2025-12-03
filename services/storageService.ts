@@ -3,82 +3,92 @@
  * SPDX-License-Identifier: Apache-2.0
 */
 
-import { DesignSession, SerializableDesignSession, SerializableFile } from '../types';
-import { dataURLtoFile, fileToDataUrl } from '../utils/fileUtils';
+import { DesignSession } from '../types';
 
-const SESSIONS_STORAGE_KEY = 'archiDesignerSessions';
+const DB_NAME = 'ArchiDesignerDB';
+const DB_VERSION = 1;
+const SESSIONS_STORE_NAME = 'sessions';
 
-// --- Serialization / Deserialization ---
-
-async function fileToSerializable(file: File): Promise<SerializableFile> {
-  const dataUrl = await fileToDataUrl(file);
-  return { name: file.name, type: file.type, dataUrl };
-}
-
-function serializableToFile(sFile: SerializableFile): File {
-  return dataURLtoFile(sFile.dataUrl, sFile.name);
-}
-
-async function sessionToSerializable(session: DesignSession): Promise<SerializableDesignSession> {
-    const [sceneImage, ...generations] = await Promise.all([
-        fileToSerializable(session.sceneImage),
-        ...session.generations.map(fileToSerializable)
-    ]);
-
-    return {
-        id: session.id,
-        name: session.name,
-        timestamp: session.timestamp,
-        thumbnail: session.thumbnail,
-        originalDimensions: session.originalDimensions,
-        sceneImage,
-        generations
+function openDB(): Promise<IDBDatabase> {
+  return new Promise((resolve, reject) => {
+    if (!window.indexedDB) {
+        return reject(new Error("IndexedDB is not supported by this browser."));
+    }
+    const request = indexedDB.open(DB_NAME, DB_VERSION);
+    request.onerror = () => {
+      console.error("IndexedDB error:", request.error);
+      reject(request.error);
     };
-}
-
-function serializableToSession(sSession: SerializableDesignSession): DesignSession {
-    return {
-        id: sSession.id,
-        name: sSession.name,
-        timestamp: sSession.timestamp,
-        thumbnail: sSession.thumbnail,
-        originalDimensions: sSession.originalDimensions,
-        sceneImage: serializableToFile(sSession.sceneImage),
-        generations: sSession.generations.map(serializableToFile),
+    request.onsuccess = () => resolve(request.result);
+    request.onupgradeneeded = (event) => {
+      const db = (event.target as IDBOpenDBRequest).result;
+      if (!db.objectStoreNames.contains(SESSIONS_STORE_NAME)) {
+        db.createObjectStore(SESSIONS_STORE_NAME, { keyPath: 'id' });
+      }
     };
+  });
 }
-
-// --- Public API ---
 
 /**
- * Saves all design sessions to local storage.
+ * Saves all design sessions to IndexedDB.
+ * This function overwrites all existing data with the provided sessions.
  * @param sessions - The array of DesignSession objects to save.
  */
-export const saveSessionsToLocalStorage = async (sessions: DesignSession[]): Promise<void> => {
+export const saveSessionsToDB = async (sessions: DesignSession[]): Promise<void> => {
     try {
-        const serializableSessions = await Promise.all(sessions.map(sessionToSerializable));
-        localStorage.setItem(SESSIONS_STORAGE_KEY, JSON.stringify(serializableSessions));
+        const db = await openDB();
+        const transaction = db.transaction(SESSIONS_STORE_NAME, 'readwrite');
+        const store = transaction.objectStore(SESSIONS_STORE_NAME);
+
+        // A single transaction for both clearing and adding is more atomic.
+        store.clear(); 
+        sessions.forEach(session => {
+            store.put(session);
+        });
+
+        return new Promise((resolve, reject) => {
+            transaction.oncomplete = () => {
+                resolve();
+            };
+            transaction.onerror = () => {
+                console.error("Save transaction error:", transaction.error);
+                reject(transaction.error);
+            };
+        });
+
     } catch (error) {
-        console.error("Failed to save sessions to local storage:", error);
+        console.error("Failed to save sessions to IndexedDB:", error);
     }
 };
 
 /**
- * Loads all design sessions from local storage.
+ * Loads all design sessions from IndexedDB.
  * @returns A promise that resolves to an array of DesignSession objects.
  */
-export const loadSessionsFromLocalStorage = async (): Promise<DesignSession[]> => {
+export const loadSessionsFromDB = async (): Promise<DesignSession[]> => {
     try {
-        const storedSessions = localStorage.getItem(SESSIONS_STORAGE_KEY);
-        if (storedSessions) {
-            const parsedSessions: SerializableDesignSession[] = JSON.parse(storedSessions);
-            // The sessions are stored newest-first, so we don't need to re-sort here.
-            return parsedSessions.map(serializableToSession);
-        }
+        const db = await openDB();
+        const transaction = db.transaction(SESSIONS_STORE_NAME, 'readonly');
+        const store = transaction.objectStore(SESSIONS_STORE_NAME);
+        const request = store.getAll();
+
+        return new Promise<DesignSession[]>((resolve, reject) => {
+            request.onsuccess = () => {
+                if (request.result) {
+                    // Sort sessions by timestamp, newest first, to maintain previous behavior.
+                    const sessions: DesignSession[] = request.result.sort((a, b) => b.timestamp - a.timestamp);
+                    resolve(sessions);
+                } else {
+                    resolve([]);
+                }
+            };
+            request.onerror = () => {
+                console.error("Failed to get all sessions:", request.error);
+                reject(request.error);
+            };
+        });
     } catch (error) {
-        console.error("Failed to load sessions from local storage:", error);
-        // If loading fails, clear the corrupted data to prevent future errors
-        localStorage.removeItem(SESSIONS_STORAGE_KEY);
+        console.error("Failed to load sessions from IndexedDB:", error);
+        return [];
     }
-    return [];
 };

@@ -18,22 +18,3 @@ export interface DesignSession {
   originalDimensions: { width: number; height: number };
   generations: File[];
 }
-
-
-// --- Types for Local Storage Serialization ---
-
-export interface SerializableFile {
-    name: string;
-    type: string;
-    dataUrl: string;
-}
-
-export interface SerializableDesignSession {
-    id: string;
-    name: string;
-    timestamp: number;
-    thumbnail: string;
-    sceneImage: SerializableFile;
-    originalDimensions: { width: number, height: number };
-    generations: SerializableFile[];
-}

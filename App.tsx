@@ -5,7 +5,7 @@
 
 import React, { useState, useCallback, useEffect, useRef } from 'react';
 import { redesignRoom, generateRotatedView } from './services/geminiService';
-import { saveSessionsToLocalStorage, loadSessionsFromLocalStorage } from './services/storageService';
+import { saveSessionsToDB, loadSessionsFromDB } from './services/storageService';
 import { getImageDimensions } from './utils/fileUtils';
 import Header from './components/Header';
 import ImageUploader from './components/ImageUploader';
@@ -14,6 +14,7 @@ import DebugModal from './components/DebugModal';
 import DrawingModal from './components/DrawingModal';
 import AddProductModal from './components/AddProductModal';
 import AddBackgroundModal from './components/AddBackgroundModal';
+import EditCanvasModal from './components/EditCanvasModal';
 import HistorySidebar from './components/HistorySidebar';
 import { DesignSession } from './types';
 
@@ -48,12 +49,17 @@ const TrashIcon = () => (
     <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="h-5 w-5"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>
 );
 
+const ScissorsIcon = () => (
+    <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="h-5 w-5"><circle cx="6" cy="6" r="3"></circle><circle cx="6" cy="18" r="3"></circle><line x1="20" y1="4" x2="8.12" y2="15.88"></line><line x1="14.47" y1="14.48" x2="20" y2="20"></line><line x1="8.12" y1="8.12" x2="12" y2="12"></line></svg>
+);
+
 
 const App: React.FC = () => {
   // Session management state
   const [sessions, setSessions] = useState<DesignSession[]>([]);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [isSidebarOpen, setIsSidebarOpen] = useState<boolean>(true);
+  const [sessionsLoaded, setSessionsLoaded] = useState<boolean>(false);
 
   // Active session's working state
   const [sceneImage, setSceneImage] = useState<File | null>(null);
@@ -76,11 +82,15 @@ const App: React.FC = () => {
   const [isDrawingModalOpen, setIsDrawingModalOpen] = useState(false);
   const [isAddProductModalOpen, setIsAddProductModalOpen] = useState(false);
   const [isAddBackgroundModalOpen, setIsAddBackgroundModalOpen] = useState(false);
+  const [isEditCanvasModalOpen, setIsEditCanvasModalOpen] = useState(false);
 
   const sceneUploaderRef = useRef<HTMLImageElement>(null);
 
   const currentGeneratedImage = history[historyIndex] ?? null;
   
+  // The image that is currently main on the screen. This is what we edit.
+  const currentWorkingImage = sketchedImage || currentGeneratedImage || sceneImage;
+
   const sceneImageUrl = sceneImage ? URL.createObjectURL(sceneImage) : null;
   const sketchedImageUrl = sketchedImage ? URL.createObjectURL(sketchedImage) : null;
   const generatedImageUrl = currentGeneratedImage ? URL.createObjectURL(currentGeneratedImage) : null;
@@ -96,22 +106,23 @@ const App: React.FC = () => {
     }
   }, [isLoading]);
 
-  // Effect for loading/saving sessions from/to local storage
+  // Effect for loading/saving sessions from/to storage
   useEffect(() => {
-    loadSessionsFromLocalStorage().then(loadedSessions => {
+    loadSessionsFromDB().then(loadedSessions => {
       setSessions(loadedSessions);
       if (loadedSessions.length > 0) {
         // Activate the most recent session
         handleSelectSession(loadedSessions[0].id);
       }
+      setSessionsLoaded(true);
     });
   }, []);
 
   useEffect(() => {
-    if (sessions.length > 0) {
-      saveSessionsToLocalStorage(sessions);
+    if (sessionsLoaded) {
+      saveSessionsToDB(sessions);
     }
-  }, [sessions]);
+  }, [sessions, sessionsLoaded]);
 
 
   const clearWorkingState = () => {
@@ -147,12 +158,12 @@ const App: React.FC = () => {
   }, [sessions]);
 
   const handleDeleteSession = useCallback((sessionId: string) => {
-    const updatedSessions = sessions.filter(s => s.id !== sessionId);
-    setSessions(updatedSessions);
+    const remainingSessions = sessions.filter(s => s.id !== sessionId);
+    setSessions(remainingSessions);
 
     if (activeSessionId === sessionId) {
-      if (updatedSessions.length > 0) {
-        handleSelectSession(updatedSessions[0].id);
+      if (remainingSessions.length > 0) {
+        handleSelectSession(remainingSessions[0].id);
       } else {
         handleNewProject();
       }
@@ -227,7 +238,7 @@ const App: React.FC = () => {
   };
 
   const handleGenerate = useCallback(async () => {
-    const imageToProcess = sketchedImage || currentGeneratedImage || sceneImage;
+    const imageToProcess = currentWorkingImage;
     if (!imageToProcess || !prompt || !originalDimensions) {
       setError('Please upload an image of your property and provide a design prompt.');
       return;
@@ -265,10 +276,10 @@ const App: React.FC = () => {
     } finally {
       setIsLoading(false);
     }
-  }, [sceneImage, currentGeneratedImage, sketchedImage, prompt, productImage, backgroundImage, originalDimensions, history, historyIndex, activeSessionId]);
+  }, [currentWorkingImage, prompt, productImage, backgroundImage, originalDimensions, history, historyIndex, activeSessionId]);
 
   const handleRotateView = useCallback(async (direction: 'left' | 'right') => {
-    const imageToRotate = sketchedImage || currentGeneratedImage || sceneImage;
+    const imageToRotate = currentWorkingImage;
     if (!imageToRotate || !originalDimensions) {
       setError('An image must be present to create a rotated view.');
       return;
@@ -293,7 +304,7 @@ const App: React.FC = () => {
     } finally {
         setIsLoading(false);
     }
-  }, [sketchedImage, currentGeneratedImage, sceneImage, originalDimensions, activeSessionId]);
+  }, [currentWorkingImage, originalDimensions, activeSessionId]);
 
   const handleRevertToOriginal = useCallback(() => {
     setHistory([]);
@@ -311,6 +322,37 @@ const App: React.FC = () => {
     setSketchedImage(file);
     setIsDrawingModalOpen(false);
   }, []);
+
+  const handleSaveCanvasEdit = async (newFile: File) => {
+      try {
+          const dimensions = await getImageDimensions(newFile);
+          
+          // When we edit the canvas, we essentially start a new branch or reset the base image
+          // because coordinates for sketches or previous generations might be invalid.
+          setSceneImage(newFile);
+          setOriginalDimensions(dimensions);
+          
+          // Clear dependent states that might be misaligned
+          setSketchedImage(null); 
+          
+          // We can choose to keep history or clear it. 
+          // Clearing it avoids confusion with different aspect ratios in the undo stack.
+          // A safer UX for now is to treat this as a new "Base".
+          setHistory([]);
+          setHistoryIndex(-1);
+          
+          if (activeSessionId) {
+              setSessions(prev => prev.map(s => 
+                  s.id === activeSessionId 
+                  ? { ...s, sceneImage: newFile, originalDimensions: dimensions, generations: [] } 
+                  : s
+              ));
+          }
+      } catch (e) {
+          console.error("Failed to update image dimensions", e);
+          setError("Failed to process edited image.");
+      }
+  };
   
   const handleDownload = () => {
     if (!generatedImageUrl) return;
@@ -432,12 +474,16 @@ const App: React.FC = () => {
                       Generate
                     </button>
                   </div>
-                  <div className="flex flex-col sm:flex-row gap-4 justify-center">
+                  <div className="flex flex-col sm:flex-row gap-4 justify-center flex-wrap">
                     <button onClick={() => setIsDrawingModalOpen(true)} className="w-full sm:w-auto px-6 py-2 border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300 font-semibold rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700 transition">
                       Sketch on Image
                     </button>
+                    <button onClick={() => setIsEditCanvasModalOpen(true)} className="w-full sm:w-auto px-6 py-2 border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300 font-semibold rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700 transition flex items-center justify-center gap-2">
+                      <ScissorsIcon />
+                      Trim / Expand
+                    </button>
                     <button onClick={() => setIsAddProductModalOpen(true)} className="w-full sm:w-auto px-6 py-2 border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300 font-semibold rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700 transition">
-                      Add Your Own Product
+                      Add Product
                     </button>
                     <button onClick={() => setIsAddBackgroundModalOpen(true)} className="w-full sm:w-auto px-6 py-2 border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300 font-semibold rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700 transition">
                       Upload Background
@@ -477,6 +523,7 @@ const App: React.FC = () => {
       </div>
 
       <DebugModal isOpen={isDebugModalOpen} onClose={() => setIsDebugModalOpen(false)} imageUrl={debugImageUrl} prompt={debugPrompt} />
+      <EditCanvasModal isOpen={isEditCanvasModalOpen} onClose={() => setIsEditCanvasModalOpen(false)} onSave={handleSaveCanvasEdit} imageFile={currentWorkingImage} />
       {displayImageUrl && (
         <DrawingModal isOpen={isDrawingModalOpen} onClose={() => setIsDrawingModalOpen(false)} onSave={handleSaveSketch} backgroundImageUrl={displayImageUrl} />
       )}
